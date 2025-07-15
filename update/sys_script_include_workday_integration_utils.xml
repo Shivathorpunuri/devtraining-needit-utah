@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_58872_needit.WorkdayIntegrationUtils</api_name>
+        <client_callable>false</client_callable>
+        <description>Utility functions for Workday to ServiceNow employee integration</description>
+        <name>WorkdayIntegrationUtils</name>
+        <script><![CDATA[var WorkdayIntegrationUtils = Class.create();
+WorkdayIntegrationUtils.prototype = {
+    
+    initialize: function() {
+        this.LOG_SOURCE = 'WorkdayIntegration';
+    },
+    
+    /**
+     * Validates employee data from Workday
+     * @param {Object} employeeData - Employee data object
+     * @returns {Object} Validation result with isValid boolean and errors array
+     */
+    validateEmployeeData: function(employeeData) {
+        var result = {
+            isValid: true,
+            errors: [],
+            warnings: []
+        };
+        
+        // Required fields validation
+        if (!employeeData.employee_id) {
+            result.errors.push('employee_id is required');
+            result.isValid = false;
+        }
+        
+        if (!employeeData.email) {
+            result.errors.push('email is required');
+            result.isValid = false;
+        }
+        
+        // Email format validation
+        if (employeeData.email && !this._isValidEmail(employeeData.email)) {
+            result.errors.push('Invalid email format: ' + employeeData.email);
+            result.isValid = false;
+        }
+        
+        // Optional field warnings
+        if (!employeeData.first_name) {
+            result.warnings.push('first_name not provided');
+        }
+        
+        if (!employeeData.last_name) {
+            result.warnings.push('last_name not provided');
+        }
+        
+        if (!employeeData.department) {
+            result.warnings.push('department not provided');
+        }
+        
+        return result;
+    },
+    
+    /**
+     * Finds or creates a department record
+     * @param {String} departmentName - Name of the department
+     * @returns {String} Department sys_id or null
+     */
+    findOrCreateDepartment: function(departmentName) {
+        if (!departmentName) return null;
+        
+        var deptRecord = new GlideRecord('cmn_department');
+        deptRecord.addQuery('name', departmentName);
+        deptRecord.query();
+        
+        if (deptRecord.next()) {
+            return deptRecord.getUniqueValue();
+        }
+        
+        // Create new department if it doesn't exist
+        var newDept = new GlideRecord('cmn_department');
+        newDept.initialize();
+        newDept.setValue('name', departmentName);
+        newDept.setValue('description', 'Auto-created from Workday integration');
+        var deptId = newDept.insert();
+        
+        if (deptId) {
+            gs.info(this.LOG_SOURCE + ': Created new department: ' + departmentName);
+            return deptId;
+        }
+        
+        return null;
+    },
+    
+    /**
+     * Finds or creates a location record
+     * @param {String} locationName - Name of the location
+     * @returns {String} Location sys_id or null
+     */
+    findOrCreateLocation: function(locationName) {
+        if (!locationName) return null;
+        
+        var locationRecord = new GlideRecord('cmn_location');
+        locationRecord.addQuery('name', locationName);
+        locationRecord.query();
+        
+        if (locationRecord.next()) {
+            return locationRecord.getUniqueValue();
+        }
+        
+        // Create new location if it doesn't exist
+        var newLocation = new GlideRecord('cmn_location');
+        newLocation.initialize();
+        newLocation.setValue('name', locationName);
+        newLocation.setValue('city', locationName); // Use name as city for now
+        var locationId = newLocation.insert();
+        
+        if (locationId) {
+            gs.info(this.LOG_SOURCE + ': Created new location: ' + locationName);
+            return locationId;
+        }
+        
+        return null;
+    },
+    
+    /**
+     * Finds a user by employee_id or email
+     * @param {String} employeeId - Employee ID
+     * @param {String} email - Email address
+     * @returns {GlideRecord} User record or null
+     */
+    findUser: function(employeeId, email) {
+        var userRecord = new GlideRecord('sys_user');
+        
+        // First try by employee_id
+        if (employeeId) {
+            userRecord.addQuery('employee_number', employeeId);
+            userRecord.query();
+            if (userRecord.next()) {
+                return userRecord;
+            }
+        }
+        
+        // Then try by email
+        if (email) {
+            userRecord = new GlideRecord('sys_user');
+            userRecord.addQuery('email', email);
+            userRecord.query();
+            if (userRecord.next()) {
+                return userRecord;
+            }
+        }
+        
+        return null;
+    },
+    
+    /**
+     * Finds a manager by employee_id or email
+     * @param {String} managerEmployeeId - Manager's employee ID
+     * @param {String} managerEmail - Manager's email
+     * @returns {String} Manager's sys_id or null
+     */
+    findManager: function(managerEmployeeId, managerEmail) {
+        var managerRecord = this.findUser(managerEmployeeId, managerEmail);
+        return managerRecord ? managerRecord.getUniqueValue() : null;
+    },
+    
+    /**
+     * Assigns default role to new employee
+     * @param {String} userSysId - User's sys_id
+     * @param {String} roleName - Role name (optional)
+     */
+    assignDefaultRole: function(userSysId, roleName) {
+        if (!userSysId) return;
+        
+        var defaultRole = roleName || 'x_58872_needit.needit_user';
+        
+        // Check if user already has this role
+        var existingRole = new GlideRecord('sys_user_has_role');
+        existingRole.addQuery('user', userSysId);
+        existingRole.addQuery('role.name', defaultRole);
+        existingRole.query();
+        
+        if (existingRole.hasNext()) {
+            gs.debug(this.LOG_SOURCE + ': User already has role: ' + defaultRole);
+            return;
+        }
+        
+        // Find the role record
+        var roleRecord = new GlideRecord('sys_user_role');
+        roleRecord.addQuery('name', defaultRole);
+        roleRecord.query();
+        
+        if (roleRecord.next()) {
+            var userRoleRecord = new GlideRecord('sys_user_has_role');
+            userRoleRecord.initialize();
+            userRoleRecord.setValue('user', userSysId);
+            userRoleRecord.setValue('role', roleRecord.getUniqueValue());
+            userRoleRecord.insert();
+            
+            gs.info(this.LOG_SOURCE + ': Assigned role ' + defaultRole + ' to user ' + userSysId);
+        } else {
+            gs.warn(this.LOG_SOURCE + ': Role not found: ' + defaultRole);
+        }
+    },
+    
+    /**
+     * Logs integration activity
+     * @param {String} action - Action performed (created, updated, error)
+     * @param {String} employeeId - Employee ID
+     * @param {String} message - Log message
+     * @param {String} details - Additional details
+     */
+    logActivity: function(action, employeeId, message, details) {
+        var logMessage = this.LOG_SOURCE + ' [' + action.toUpperCase() + '] Employee ' + employeeId + ': ' + message;
+        
+        if (details) {
+            logMessage += ' - Details: ' + details;
+        }
+        
+        switch (action.toLowerCase()) {
+            case 'error':
+                gs.error(logMessage);
+                break;
+            case 'warning':
+                gs.warn(logMessage);
+                break;
+            default:
+                gs.info(logMessage);
+        }
+    },
+    
+    /**
+     * Generates username from employee data
+     * @param {Object} employeeData - Employee data
+     * @returns {String} Generated username
+     */
+    generateUsername: function(employeeData) {
+        if (employeeData.username) {
+            return employeeData.username;
+        }
+        
+        if (employeeData.email) {
+            return employeeData.email.split('@')[0];
+        }
+        
+        if (employeeData.first_name && employeeData.last_name) {
+            return (employeeData.first_name + '.' + employeeData.last_name).toLowerCase();
+        }
+        
+        return employeeData.employee_id;
+    },
+    
+    /**
+     * Validates email format
+     * @param {String} email - Email address
+     * @returns {Boolean} True if valid email format
+     */
+    _isValidEmail: function(email) {
+        var emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        return emailRegex.test(email);
+    },
+    
+    type: 'WorkdayIntegrationUtils'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2024-01-15 10:00:00</sys_created_on>
+        <sys_id>wkdy34560f603200cd674f8ce1050ed4</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>WorkdayIntegrationUtils</sys_name>
+        <sys_package display_value="NeedIt" source="x_58872_needit">6ead8e780f603200cd674f8ce1050ed1</sys_package>
+        <sys_scope display_value="NeedIt">6ead8e780f603200cd674f8ce1050ed1</sys_scope>
+        <sys_update_name>sys_script_include_workday_integration_utils</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2024-01-15 10:00:00</sys_updated_on>
+    </sys_script_include>
+</record_update>

@@ -1,0 +1,287 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<record_update table="sys_ws_operation">
+    <sys_ws_operation action="INSERT_OR_UPDATE">
+        <active>true</active>
+        <consumes>application/json</consumes>
+        <consumes_customized>false</consumes_customized>
+        <description>Processes multiple employee records in batch from Workday</description>
+        <enforce_acl>cf9d01d3e73003009d6247e603f6a990</enforce_acl>
+        <http_method>POST</http_method>
+        <name>Batch Create Employees</name>
+        <operation_script><![CDATA[(function process(/*RESTAPIRequest*/ request, /*RESTAPIResponse*/ response) {
+    
+    var requestBody = request.body.data;
+    var results = [];
+    var successCount = 0;
+    var errorCount = 0;
+    
+    try {
+        // Validate request structure
+        if (!requestBody.employees || !Array.isArray(requestBody.employees)) {
+            response.setStatus(400);
+            response.setBody({
+                "error": "Invalid request format",
+                "message": "Request must contain an 'employees' array",
+                "example": {
+                    "employees": [
+                        {
+                            "employee_id": "WD001234",
+                            "email": "john.doe@company.com",
+                            "first_name": "John",
+                            "last_name": "Doe"
+                        }
+                    ]
+                }
+            });
+            return;
+        }
+        
+        gs.info('Workday Batch Integration: Processing ' + requestBody.employees.length + ' employees');
+        
+        // Process each employee
+        for (var i = 0; i < requestBody.employees.length; i++) {
+            var employeeData = requestBody.employees[i];
+            var result = {
+                "index": i,
+                "employee_id": employeeData.employee_id,
+                "email": employeeData.email
+            };
+            
+            try {
+                // Validate required fields for this employee
+                if (!employeeData.employee_id || !employeeData.email) {
+                    result.success = false;
+                    result.error = "Missing required fields (employee_id and email)";
+                    errorCount++;
+                    results.push(result);
+                    continue;
+                }
+                
+                // Check if user already exists
+                var userRecord = new GlideRecord('sys_user');
+                var userExists = false;
+                
+                // Check by employee_id first
+                userRecord.addQuery('employee_number', employeeData.employee_id);
+                userRecord.query();
+                if (userRecord.next()) {
+                    userExists = true;
+                } else {
+                    // Check by email
+                    userRecord = new GlideRecord('sys_user');
+                    userRecord.addQuery('email', employeeData.email);
+                    userRecord.query();
+                    if (userRecord.next()) {
+                        userExists = true;
+                    }
+                }
+                
+                // If user doesn't exist, create new record
+                if (!userExists) {
+                    userRecord = new GlideRecord('sys_user');
+                    userRecord.initialize();
+                }
+                
+                // Map fields
+                if (employeeData.employee_id) {
+                    userRecord.setValue('employee_number', employeeData.employee_id);
+                    if (!employeeData.username) {
+                        userRecord.setValue('user_name', employeeData.employee_id);
+                    }
+                }
+                
+                if (employeeData.email) {
+                    userRecord.setValue('email', employeeData.email);
+                }
+                
+                if (employeeData.username) {
+                    userRecord.setValue('user_name', employeeData.username);
+                }
+                
+                if (employeeData.first_name) {
+                    userRecord.setValue('first_name', employeeData.first_name);
+                }
+                
+                if (employeeData.last_name) {
+                    userRecord.setValue('last_name', employeeData.last_name);
+                }
+                
+                if (employeeData.title || employeeData.job_title) {
+                    userRecord.setValue('title', employeeData.title || employeeData.job_title);
+                }
+                
+                if (employeeData.department) {
+                    var deptRecord = new GlideRecord('cmn_department');
+                    deptRecord.addQuery('name', employeeData.department);
+                    deptRecord.query();
+                    if (deptRecord.next()) {
+                        userRecord.setValue('department', deptRecord.sys_id);
+                    }
+                }
+                
+                if (employeeData.location) {
+                    var locationRecord = new GlideRecord('cmn_location');
+                    locationRecord.addQuery('name', employeeData.location);
+                    locationRecord.query();
+                    if (locationRecord.next()) {
+                        userRecord.setValue('location', locationRecord.sys_id);
+                    }
+                }
+                
+                if (employeeData.phone || employeeData.work_phone) {
+                    userRecord.setValue('phone', employeeData.phone || employeeData.work_phone);
+                }
+                
+                if (employeeData.mobile_phone) {
+                    userRecord.setValue('mobile_phone', employeeData.mobile_phone);
+                }
+                
+                if (employeeData.start_date || employeeData.hire_date) {
+                    var startDate = employeeData.start_date || employeeData.hire_date;
+                    userRecord.setValue('u_start_date', startDate);
+                }
+                
+                // Handle manager assignment
+                if (employeeData.manager_employee_id) {
+                    var managerRecord = new GlideRecord('sys_user');
+                    managerRecord.addQuery('employee_number', employeeData.manager_employee_id);
+                    managerRecord.query();
+                    if (managerRecord.next()) {
+                        userRecord.setValue('manager', managerRecord.sys_id);
+                    }
+                } else if (employeeData.manager_email) {
+                    var managerRecord = new GlideRecord('sys_user');
+                    managerRecord.addQuery('email', employeeData.manager_email);
+                    managerRecord.query();
+                    if (managerRecord.next()) {
+                        userRecord.setValue('manager', managerRecord.sys_id);
+                    }
+                }
+                
+                userRecord.setValue('active', true);
+                
+                if (!userExists) {
+                    userRecord.setValue('user_type', 'employee');
+                }
+                
+                // Save the record
+                var userSysId;
+                if (userExists) {
+                    userSysId = userRecord.update();
+                    result.action = "updated";
+                } else {
+                    userSysId = userRecord.insert();
+                    result.action = "created";
+                    
+                    // Add default role for new employees
+                    if (userSysId) {
+                        var userRoleRecord = new GlideRecord('sys_user_has_role');
+                        userRoleRecord.initialize();
+                        userRoleRecord.setValue('user', userSysId);
+                        
+                        var roleRecord = new GlideRecord('sys_user_role');
+                        roleRecord.addQuery('name', 'x_58872_needit.needit_user');
+                        roleRecord.query();
+                        if (roleRecord.next()) {
+                            userRoleRecord.setValue('role', roleRecord.sys_id);
+                            userRoleRecord.insert();
+                        }
+                    }
+                }
+                
+                if (userSysId) {
+                    result.success = true;
+                    result.user_sys_id = userSysId;
+                    successCount++;
+                } else {
+                    result.success = false;
+                    result.error = "Failed to save user record";
+                    errorCount++;
+                }
+                
+            } catch (employeeError) {
+                result.success = false;
+                result.error = "Error processing employee: " + employeeError.message;
+                errorCount++;
+                gs.error('Workday Batch Integration - Employee Error: ' + employeeError.message + ' for employee ID: ' + employeeData.employee_id);
+            }
+            
+            results.push(result);
+        }
+        
+        // Return batch results
+        response.setStatus(200);
+        response.setBody({
+            "success": true,
+            "message": "Batch processing completed",
+            "summary": {
+                "total_processed": requestBody.employees.length,
+                "successful": successCount,
+                "errors": errorCount
+            },
+            "results": results
+        });
+        
+    } catch (error) {
+        gs.error('Workday Batch Integration Error: ' + error.message);
+        response.setStatus(500);
+        response.setBody({
+            "error": "Internal server error",
+            "message": "An unexpected error occurred during batch processing",
+            "details": error.message
+        });
+    }
+    
+})(request, response);]]></operation_script>
+        <operation_uri>employees/batch</operation_uri>
+        <produces>application/json</produces>
+        <produces_customized>false</produces_customized>
+        <relative_path>/employees/batch</relative_path>
+        <request_example>
+{
+  "employees": [
+    {
+      "employee_id": "WD001234",
+      "username": "john.doe",
+      "email": "john.doe@company.com",
+      "first_name": "John",
+      "last_name": "Doe",
+      "title": "Software Engineer",
+      "department": "Information Technology",
+      "location": "New York Office",
+      "phone": "+1-555-123-4567",
+      "start_date": "2024-01-15",
+      "manager_employee_id": "WD005678"
+    },
+    {
+      "employee_id": "WD001235",
+      "username": "jane.smith",
+      "email": "jane.smith@company.com",
+      "first_name": "Jane",
+      "last_name": "Smith",
+      "title": "Product Manager",
+      "department": "Product",
+      "location": "San Francisco Office",
+      "phone": "+1-555-123-4568",
+      "start_date": "2024-01-16",
+      "manager_employee_id": "WD005679"
+    }
+  ]
+}
+        </request_example>
+        <short_description>Process multiple employees from Workday in batch</short_description>
+        <sys_class_name>sys_ws_operation</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2024-01-15 10:00:00</sys_created_on>
+        <sys_id>wkdy90120f603200cd674f8ce1050ed3</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>Batch Create Employees</sys_name>
+        <sys_package display_value="NeedIt" source="x_58872_needit">6ead8e780f603200cd674f8ce1050ed1</sys_package>
+        <sys_scope display_value="NeedIt">6ead8e780f603200cd674f8ce1050ed1</sys_scope>
+        <sys_update_name>sys_ws_operation_workday_batch_employees</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2024-01-15 10:00:00</sys_updated_on>
+        <web_service_definition display_value="Workday Employee Integration">wkdy12340f603200cd674f8ce1050ed1</web_service_definition>
+        <web_service_version/>
+    </sys_ws_operation>
+</record_update>

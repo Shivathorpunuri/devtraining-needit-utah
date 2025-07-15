@@ -1,0 +1,243 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<record_update table="sys_ws_operation">
+    <sys_ws_operation action="INSERT_OR_UPDATE">
+        <active>true</active>
+        <consumes>application/json</consumes>
+        <consumes_customized>false</consumes_customized>
+        <description>Creates or updates employee records in ServiceNow based on Workday hired employee data</description>
+        <enforce_acl>cf9d01d3e73003009d6247e603f6a990</enforce_acl>
+        <http_method>POST</http_method>
+        <name>Create Employee</name>
+        <operation_script><![CDATA[(function process(/*RESTAPIRequest*/ request, /*RESTAPIResponse*/ response) {
+    
+    // Parse the incoming request body
+    var requestBody = request.body.data;
+    
+    try {
+        // Validate required fields
+        if (!requestBody.employee_id || !requestBody.email) {
+            response.setStatus(400);
+            response.setBody({
+                "error": "Missing required fields",
+                "message": "employee_id and email are required",
+                "required_fields": ["employee_id", "email"]
+            });
+            return;
+        }
+
+        // Log the incoming request for debugging
+        gs.info('Workday Employee Integration: Processing employee data for ID: ' + requestBody.employee_id);
+        
+        // Check if user already exists by employee ID or email
+        var userRecord = new GlideRecord('sys_user');
+        var userExists = false;
+        
+        // First check by employee_id
+        if (requestBody.employee_id) {
+            userRecord.addQuery('employee_number', requestBody.employee_id);
+            userRecord.query();
+            if (userRecord.next()) {
+                userExists = true;
+            }
+        }
+        
+        // If not found by employee_id, check by email
+        if (!userExists && requestBody.email) {
+            userRecord = new GlideRecord('sys_user');
+            userRecord.addQuery('email', requestBody.email);
+            userRecord.query();
+            if (userRecord.next()) {
+                userExists = true;
+            }
+        }
+        
+        // If user doesn't exist, create new record
+        if (!userExists) {
+            userRecord = new GlideRecord('sys_user');
+            userRecord.initialize();
+        }
+        
+        // Map Workday fields to ServiceNow sys_user fields
+        if (requestBody.employee_id) {
+            userRecord.setValue('employee_number', requestBody.employee_id);
+            userRecord.setValue('user_name', requestBody.employee_id); // Use employee_id as username if not provided
+        }
+        
+        if (requestBody.email) {
+            userRecord.setValue('email', requestBody.email);
+        }
+        
+        if (requestBody.first_name) {
+            userRecord.setValue('first_name', requestBody.first_name);
+        }
+        
+        if (requestBody.last_name) {
+            userRecord.setValue('last_name', requestBody.last_name);
+        }
+        
+        if (requestBody.username) {
+            userRecord.setValue('user_name', requestBody.username);
+        }
+        
+        if (requestBody.title || requestBody.job_title) {
+            userRecord.setValue('title', requestBody.title || requestBody.job_title);
+        }
+        
+        if (requestBody.department) {
+            // Try to find department by name, if not found create it or use as string
+            var deptRecord = new GlideRecord('cmn_department');
+            deptRecord.addQuery('name', requestBody.department);
+            deptRecord.query();
+            if (deptRecord.next()) {
+                userRecord.setValue('department', deptRecord.sys_id);
+            } else {
+                // If department doesn't exist, you might want to create it or log it
+                gs.warn('Workday Integration: Department not found: ' + requestBody.department);
+            }
+        }
+        
+        if (requestBody.location) {
+            // Try to find location by name
+            var locationRecord = new GlideRecord('cmn_location');
+            locationRecord.addQuery('name', requestBody.location);
+            locationRecord.query();
+            if (locationRecord.next()) {
+                userRecord.setValue('location', locationRecord.sys_id);
+            }
+        }
+        
+        if (requestBody.phone || requestBody.work_phone) {
+            userRecord.setValue('phone', requestBody.phone || requestBody.work_phone);
+        }
+        
+        if (requestBody.mobile_phone) {
+            userRecord.setValue('mobile_phone', requestBody.mobile_phone);
+        }
+        
+        if (requestBody.start_date || requestBody.hire_date) {
+            var startDate = requestBody.start_date || requestBody.hire_date;
+            userRecord.setValue('u_start_date', startDate);
+        }
+        
+        if (requestBody.manager_employee_id) {
+            // Find manager by employee_id
+            var managerRecord = new GlideRecord('sys_user');
+            managerRecord.addQuery('employee_number', requestBody.manager_employee_id);
+            managerRecord.query();
+            if (managerRecord.next()) {
+                userRecord.setValue('manager', managerRecord.sys_id);
+            }
+        } else if (requestBody.manager_email) {
+            // Find manager by email
+            var managerRecord = new GlideRecord('sys_user');
+            managerRecord.addQuery('email', requestBody.manager_email);
+            managerRecord.query();
+            if (managerRecord.next()) {
+                userRecord.setValue('manager', managerRecord.sys_id);
+            }
+        }
+        
+        // Set user as active
+        userRecord.setValue('active', true);
+        
+        // Set default user type and roles
+        if (!userExists) {
+            userRecord.setValue('user_type', 'employee');
+            // Add default role for new employees
+            var defaultRole = 'x_58872_needit.needit_user';
+        }
+        
+        // Save the user record
+        var userSysId;
+        if (userExists) {
+            userSysId = userRecord.update();
+            gs.info('Workday Integration: Updated existing user with sys_id: ' + userSysId);
+        } else {
+            userSysId = userRecord.insert();
+            gs.info('Workday Integration: Created new user with sys_id: ' + userSysId);
+            
+            // Add default role for new employees
+            if (userSysId && defaultRole) {
+                var userRoleRecord = new GlideRecord('sys_user_has_role');
+                userRoleRecord.initialize();
+                userRoleRecord.setValue('user', userSysId);
+                
+                // Find the role record
+                var roleRecord = new GlideRecord('sys_user_role');
+                roleRecord.addQuery('name', defaultRole);
+                roleRecord.query();
+                if (roleRecord.next()) {
+                    userRoleRecord.setValue('role', roleRecord.sys_id);
+                    userRoleRecord.insert();
+                }
+            }
+        }
+        
+        if (userSysId) {
+            // Success response
+            response.setStatus(200);
+            response.setBody({
+                "success": true,
+                "message": userExists ? "Employee updated successfully" : "Employee created successfully",
+                "user_sys_id": userSysId,
+                "employee_id": requestBody.employee_id,
+                "action": userExists ? "updated" : "created"
+            });
+        } else {
+            // Error saving record
+            response.setStatus(500);
+            response.setBody({
+                "error": "Failed to save employee record",
+                "message": "An error occurred while saving the employee data"
+            });
+        }
+        
+    } catch (error) {
+        // Handle any unexpected errors
+        gs.error('Workday Integration Error: ' + error.message);
+        response.setStatus(500);
+        response.setBody({
+            "error": "Internal server error",
+            "message": "An unexpected error occurred while processing the request",
+            "details": error.message
+        });
+    }
+    
+})(request, response);]]></operation_script>
+        <operation_uri>employee</operation_uri>
+        <produces>application/json</produces>
+        <produces_customized>false</produces_customized>
+        <relative_path>/employee</relative_path>
+        <request_example>
+{
+  "employee_id": "WD001234",
+  "username": "john.doe",
+  "email": "john.doe@company.com",
+  "first_name": "John",
+  "last_name": "Doe",
+  "title": "Software Engineer",
+  "department": "Information Technology",
+  "location": "New York Office",
+  "phone": "+1-555-123-4567",
+  "mobile_phone": "+1-555-987-6543",
+  "start_date": "2024-01-15",
+  "manager_employee_id": "WD005678",
+  "manager_email": "jane.manager@company.com"
+}
+        </request_example>
+        <short_description>Create or update employee from Workday data</short_description>
+        <sys_class_name>sys_ws_operation</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2024-01-15 10:00:00</sys_created_on>
+        <sys_id>wkdy56780f603200cd674f8ce1050ed2</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>Create Employee</sys_name>
+        <sys_package display_value="NeedIt" source="x_58872_needit">6ead8e780f603200cd674f8ce1050ed1</sys_package>
+        <sys_scope display_value="NeedIt">6ead8e780f603200cd674f8ce1050ed1</sys_scope>
+        <sys_update_name>sys_ws_operation_workday_create_employee</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2024-01-15 10:00:00</sys_updated_on>
+        <web_service_definition display_value="Workday Employee Integration">wkdy12340f603200cd674f8ce1050ed1</web_service_definition>
+        <web_service_version/>
+    </sys_ws_operation>
+</record_update>
