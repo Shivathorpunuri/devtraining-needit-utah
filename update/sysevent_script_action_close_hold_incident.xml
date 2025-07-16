@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?><record_update sys_domain="global" table="sysevent_script_action">
+    <sysevent_script_action action="INSERT_OR_UPDATE">
+        <active>true</active>
+        <condition_script/>
+        <description>Automatically closes incidents that have been on hold for 3+ days and sends notification to assignee</description>
+        <event_name>x_58872_needit.closeHoldIncident</event_name>
+        <n>Close Hold Incident and Notify Assignee</n>
+        <order>100</order>
+        <script><![CDATA[// Close the incident that has been on hold for 3+ days
+try {
+    // Get the assignee information before closing
+    var assigneeEmail = '';
+    var assigneeName = '';
+    var incidentNumber = current.number || '';
+    
+    if (current.assigned_to) {
+        var assigneeRecord = new GlideRecord('sys_user');
+        if (assigneeRecord.get(current.assigned_to)) {
+            assigneeEmail = assigneeRecord.email || '';
+            assigneeName = assigneeRecord.getDisplayValue() || '';
+        }
+    }
+    
+    // Set resolution information
+    current.close_code = 'Closed by System';
+    current.close_notes = 'Automatically closed - Incident was on hold for more than 3 days without activity';
+    current.state = 7; // Closed state
+    current.resolved_at = new GlideDateTime();
+    current.closed_at = new GlideDateTime();
+    
+    // Update the incident record
+    current.update();
+    
+    gs.info("Incident " + incidentNumber + " automatically closed after being on hold for 3+ days");
+    
+    // Send email notification to assignee if email exists
+    if (assigneeEmail && assigneeEmail != '') {
+        var email = new GlideEmailOutbound();
+        email.setSubject('Incident ' + incidentNumber + ' - Automatically Closed');
+        email.setFrom('noreply@servicenow.com');
+        email.setTo(assigneeEmail);
+        
+        var emailBody = 'Dear ' + assigneeName + ',\n\n';
+        emailBody += 'This is to inform you that incident ' + incidentNumber + ' has been automatically closed.\n\n';
+        emailBody += 'Reason: The incident was on hold for more than 3 days without any activity.\n\n';
+        emailBody += 'If this incident still requires attention, please reopen it or create a new incident.\n\n';
+        emailBody += 'Incident Details:\n';
+        emailBody += '- Number: ' + incidentNumber + '\n';
+        emailBody += '- Short Description: ' + (current.short_description || '') + '\n';
+        emailBody += '- Closed At: ' + current.closed_at + '\n\n';
+        emailBody += 'Thank you,\nIT Service Desk';
+        
+        email.setBody(emailBody);
+        email.send();
+        
+        gs.info("Notification sent to " + assigneeEmail + " for incident " + incidentNumber);
+    } else {
+        gs.warn("No assignee email found for incident " + incidentNumber + " - notification not sent");
+    }
+    
+} catch (e) {
+    gs.error("Error processing hold incident closure: " + e.message);
+}]]></script>
+        <synchronous>false</synchronous>
+        <sys_class_name>sysevent_script_action</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2024-01-01 00:00:00</sys_created_on>
+        <sys_domain>global</sys_domain>
+        <sys_domain_path>/</sys_domain_path>
+        <sys_id>b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>Close Hold Incident and Notify Assignee</sys_name>
+        <sys_overrides/>
+        <sys_package display_value="NeedIt" source="x_58872_needit">6ead8e780f603200cd674f8ce1050ed1</sys_package>
+        <sys_policy/>
+        <sys_scope display_value="NeedIt">6ead8e780f603200cd674f8ce1050ed1</sys_scope>
+        <sys_update_name>sysevent_script_action_b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2024-01-01 00:00:00</sys_updated_on>
+    </sysevent_script_action>
+</record_update>
